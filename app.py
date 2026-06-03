@@ -35,9 +35,6 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# ─────────────────────────────────────────────
-#  CUSTOM CSS
-# ─────────────────────────────────────────────
 st.markdown("""
 <style>
 .metric-card {
@@ -76,10 +73,6 @@ st.title("🧠 RAG Multimodal Assistant Pro")
 st.caption("Hybrid Search · Cross-Encoder Reranking · Graph RAG · Vision · RAGAS Evaluation")
 
 
-# ─────────────────────────────────────────────
-#  FILE LOG
-# ─────────────────────────────────────────────
-
 def load_log():
     if os.path.exists(UPLOADED_FILES_LOG):
         with open(UPLOADED_FILES_LOG, "r") as f:
@@ -92,14 +85,9 @@ def save_log(files):
         json.dump(files, f)
 
 
-# ─────────────────────────────────────────────
-#  SIDEBAR
-# ─────────────────────────────────────────────
-
 with st.sidebar:
     st.title("📁 File Manager")
 
-    # Pinecone status
     st.markdown("### 🔌 Pinecone Status")
     try:
         stats = get_pinecone_index().describe_index_stats()
@@ -109,14 +97,12 @@ with st.sidebar:
     except Exception as e:
         st.error(f"❌ Pinecone error: {e}")
 
-    # Graph status
     from rag_pipeline import _graph as kg
     if kg.number_of_nodes() > 0:
         st.success(f"🕸️ Graph: {kg.number_of_nodes()} entities, {kg.number_of_edges()} relations")
 
     st.markdown("---")
 
-    # Uploaded files list
     uploaded_log = load_log()
     if uploaded_log:
         st.markdown("**📄 Uploaded files:**")
@@ -129,7 +115,6 @@ with st.sidebar:
 
     st.markdown("---")
 
-    # File uploader
     new_files = st.file_uploader(
         "Upload PDFs, Word docs, or Audio",
         type=["pdf", "docx", "mp3", "wav", "m4a"],
@@ -157,7 +142,7 @@ with st.sidebar:
                     st.error(f"❌ Audio error: {e}")
             else:
                 try:
-                    with st.spinner(f"Processing {uf.name}... (contextual chunking + image extraction)"):
+                    with st.spinner(f"Processing {uf.name}..."):
                         pages, chunks = process_file(uf.read(), uf.name)
                     uploaded_log.append(uf.name)
                     save_log(uploaded_log)
@@ -167,10 +152,9 @@ with st.sidebar:
 
     st.markdown("---")
 
-    # Settings
     with st.expander("⚙️ Settings"):
-        show_graph = st.checkbox("Show knowledge graph", value=True)
-        show_debug = st.checkbox("Show debug panel", value=False)
+        show_graph  = st.checkbox("Show knowledge graph", value=True)
+        show_debug  = st.checkbox("Show debug panel", value=False)
         show_scores = st.checkbox("Show reranking scores", value=True)
 
         st.markdown("**⚡ Speed vs Quality (upload)**")
@@ -178,7 +162,6 @@ with st.sidebar:
         enable_img = st.checkbox("Image extraction (+10s/image)", value=True)
         enable_grp = st.checkbox("Graph building (+5s/doc)", value=True)
 
-        # Push toggles into pipeline module
         import rag_pipeline as rp
         rp.ENABLE_CONTEXTUAL_CHUNKING = enable_ctx
         rp.ENABLE_IMAGE_EXTRACTION    = enable_img
@@ -193,23 +176,17 @@ with st.sidebar:
                 pc.delete_index(idx_name)
             if os.path.exists(UPLOADED_FILES_LOG):
                 os.remove(UPLOADED_FILES_LOG)
-            # Clear cached resources
             st.cache_resource.clear()
             st.success("Cleared! Please refresh the page.")
         except Exception as e:
             st.error(f"Clear error: {e}")
 
 
-# ─────────────────────────────────────────────
-#  MAIN TABS
-# ─────────────────────────────────────────────
-
 uploaded_log = load_log()
 
 tab_chat, tab_graph, tab_eval = st.tabs(["💬 Chat", "🕸️ Knowledge Graph", "📊 Evaluation"])
 
 
-# ── TAB 1: CHAT ──────────────────────────────
 with tab_chat:
     st.subheader("Ask anything across your files")
 
@@ -242,7 +219,6 @@ with tab_chat:
         if not uploaded_log:
             st.error("Please upload a file first.")
         else:
-            # Verify DB
             try:
                 stats = get_pinecone_index().describe_index_stats()
                 total = stats.get("total_vector_count", 0)
@@ -256,19 +232,14 @@ with tab_chat:
             with st.spinner("🔍 Hybrid search → Reranking → Generating answer..."):
                 result = query_rag(question)
 
-            answer       = result["result"]
-            top_docs     = result["source_documents"]
-            graph_ctx    = result["graph_context"]
-            expanded_q   = result.get("expanded_query", question)
+            answer     = result["result"]
+            top_docs   = result["source_documents"]
+            graph_ctx  = result["graph_context"]
+            expanded_q = result.get("expanded_query", question)
 
-            # ── Answer
             st.markdown("### 💡 Answer")
-            st.markdown(
-                f'<div class="answer-box">{answer}</div>',
-                unsafe_allow_html=True
-            )
+            st.markdown(f'<div class="answer-box">{answer}</div>', unsafe_allow_html=True)
 
-            # ── Graph context pill
             if graph_ctx:
                 st.markdown(
                     f'<div class="graph-info">🕸️ <b>Knowledge Graph enriched this answer:</b><br>'
@@ -278,7 +249,6 @@ with tab_chat:
 
             st.markdown("---")
 
-            # ── Sources
             col_src, col_chunks = st.columns(2)
             with col_src:
                 st.markdown("**📎 Sources used:**")
@@ -295,7 +265,6 @@ with tab_chat:
                 for t, cnt in types.items():
                     st.write(f"• {t}: {cnt}")
 
-            # ── Debug panel
             if show_debug:
                 with st.expander("🔬 Debug — Retrieved & Reranked Chunks"):
                     st.markdown(f"**Expanded query:**\n```\n{expanded_q}\n```")
@@ -308,7 +277,6 @@ with tab_chat:
                         st.markdown("---")
 
 
-# ── TAB 2: KNOWLEDGE GRAPH ───────────────────
 with tab_graph:
     st.subheader("🕸️ Knowledge Graph Explorer")
     from rag_pipeline import _graph as kg
@@ -334,7 +302,6 @@ with tab_graph:
                         rel = kg[search_entity][nb].get("relation", "related to")
                         st.write(f"  → **{search_entity}** `{rel}` **{nb}**")
                 else:
-                    # Fuzzy match
                     close = [n for n in kg.nodes() if search_entity.lower() in n.lower()]
                     if close:
                         st.warning(f"Not found exactly. Similar: {', '.join(close[:5])}")
@@ -344,12 +311,10 @@ with tab_graph:
         st.markdown("---")
         st.markdown("**Graph Visualization** (top 50 nodes by degree)")
 
-        # Draw graph
         fig, ax = plt.subplots(figsize=(14, 8))
         fig.patch.set_facecolor("#0e1117")
         ax.set_facecolor("#0e1117")
 
-        # Take top 50 nodes by degree
         top_nodes = sorted(kg.degree(), key=lambda x: x[1], reverse=True)[:50]
         subgraph = kg.subgraph([n for n, _ in top_nodes])
 
@@ -357,34 +322,18 @@ with tab_graph:
         degrees = dict(subgraph.degree())
         node_sizes = [300 + degrees[n] * 100 for n in subgraph.nodes()]
 
-        nx.draw_networkx_nodes(
-            subgraph, pos, node_size=node_sizes,
-            node_color="#7c3aed", alpha=0.85, ax=ax
-        )
-        nx.draw_networkx_labels(
-            subgraph, pos, font_color="white",
-            font_size=7, ax=ax
-        )
-        nx.draw_networkx_edges(
-            subgraph, pos, edge_color="#4b5563",
-            arrows=True, alpha=0.6, ax=ax
-        )
+        nx.draw_networkx_nodes(subgraph, pos, node_size=node_sizes, node_color="#7c3aed", alpha=0.85, ax=ax)
+        nx.draw_networkx_labels(subgraph, pos, font_color="white", font_size=7, ax=ax)
+        nx.draw_networkx_edges(subgraph, pos, edge_color="#4b5563", arrows=True, alpha=0.6, ax=ax)
 
-        edge_labels = {
-            (u, v): d.get("relation", "")[:15]
-            for u, v, d in subgraph.edges(data=True)
-        }
-        nx.draw_networkx_edge_labels(
-            subgraph, pos, edge_labels=edge_labels,
-            font_color="#9ca3af", font_size=6, ax=ax
-        )
+        edge_labels = {(u, v): d.get("relation", "")[:15] for u, v, d in subgraph.edges(data=True)}
+        nx.draw_networkx_edge_labels(subgraph, pos, edge_labels=edge_labels, font_color="#9ca3af", font_size=6, ax=ax)
 
         ax.axis("off")
         plt.tight_layout()
         st.pyplot(fig)
         plt.close(fig)
 
-        # Edge list table
         with st.expander("📋 All relations (click to expand)"):
             rows = []
             for u, v, d in kg.edges(data=True):
@@ -398,17 +347,31 @@ with tab_graph:
             st.dataframe(pd.DataFrame(rows), use_container_width=True)
 
 
-# ── TAB 3: RAGAS EVALUATION ──────────────────
+# ── TAB 3: EVALUATION ────────────────────────────────────────────────────────
 with tab_eval:
     st.subheader("📊 RAG Evaluation Dashboard")
-    st.caption("Evaluate your RAG pipeline with faithfulness & answer relevancy scores")
+    st.caption("Evaluate your RAG pipeline with faithfulness, answer relevancy, and correctness scores")
 
     if not uploaded_log:
         st.warning("Upload documents before running evaluation.")
     else:
-        st.markdown("**Add test Q&A pairs below** (ground truth is optional but improves scoring):")
+        # ── Explanation of metrics ────────────────────────────────────────────
+        with st.expander("ℹ️ How are these metrics calculated?", expanded=False):
+            st.markdown("""
+| Metric | What it measures | Uses ground truth? |
+|---|---|---|
+| **Faithfulness** | Is the answer grounded in the retrieved context? | ❌ No |
+| **Answer Relevancy** | Does the answer address the question asked? | ❌ No |
+| **Correctness** | Does the answer match the expected ground truth? | ✅ Yes — required |
+| **Overall** | Weighted average (correctness = 50% when GT provided) | — |
 
-        # Session state for test cases
+> ⚠️ **Why ground truth matters:** Without a ground truth, the system can only check whether the  
+> answer *sounds* relevant and is supported by context — it cannot catch factually wrong answers.  
+> Always provide a ground truth to get meaningful scores.
+            """)
+
+        st.markdown("**Add test Q&A pairs below** (ground truth is optional but strongly recommended):")
+
         if "eval_cases" not in st.session_state:
             st.session_state.eval_cases = [{"question": "", "ground_truth": ""}]
 
@@ -421,7 +384,7 @@ with tab_eval:
                     )
                 with c2:
                     st.session_state.eval_cases[i]["ground_truth"] = st.text_input(
-                        "Ground Truth (optional)", value=case["ground_truth"], key=f"gt_{i}"
+                        "Ground Truth (strongly recommended)", value=case["ground_truth"], key=f"gt_{i}"
                     )
 
         col_add, col_run = st.columns(2)
@@ -434,9 +397,7 @@ with tab_eval:
             run_eval = st.button("▶️ Run Evaluation", type="primary")
 
         if run_eval:
-            valid_cases = [
-                c for c in st.session_state.eval_cases if c["question"].strip()
-            ]
+            valid_cases = [c for c in st.session_state.eval_cases if c["question"].strip()]
             if not valid_cases:
                 st.error("Add at least one question.")
             else:
@@ -445,22 +406,63 @@ with tab_eval:
 
                 st.markdown("---")
                 st.markdown("### Results")
-                m1, m2, m3 = st.columns(3)
-                with m1:
-                    faith = metrics["faithfulness"]
-                    color = "🟢" if faith >= 0.7 else "🟡" if faith >= 0.4 else "🔴"
-                    st.metric(f"{color} Faithfulness", f"{faith:.1%}")
-                    st.caption("Is the answer grounded in context?")
-                with m2:
-                    rel = metrics["answer_relevancy"]
-                    color = "🟢" if rel >= 0.7 else "🟡" if rel >= 0.4 else "🔴"
-                    st.metric(f"{color} Answer Relevancy", f"{rel:.1%}")
-                    st.caption("Does the answer address the question?")
-                with m3:
-                    avg = (faith + rel) / 2
-                    color = "🟢" if avg >= 0.7 else "🟡" if avg >= 0.4 else "🔴"
-                    st.metric(f"{color} Overall Score", f"{avg:.1%}")
-                    st.caption("Average of both metrics")
+
+                has_gt = metrics.get("has_ground_truth", False)
+
+                if has_gt:
+                    # Show all 4 metrics
+                    m1, m2, m3, m4 = st.columns(4)
+                    with m1:
+                        faith = metrics["faithfulness"]
+                        color = "🟢" if faith >= 0.7 else "🟡" if faith >= 0.4 else "🔴"
+                        st.metric(f"{color} Faithfulness", f"{faith:.1%}")
+                        st.caption("Grounded in context?")
+                    with m2:
+                        rel = metrics["answer_relevancy"]
+                        color = "🟢" if rel >= 0.7 else "🟡" if rel >= 0.4 else "🔴"
+                        st.metric(f"{color} Answer Relevancy", f"{rel:.1%}")
+                        st.caption("Addresses the question?")
+                    with m3:
+                        correct = metrics["correctness"]
+                        color = "🟢" if correct >= 0.7 else "🟡" if correct >= 0.4 else "🔴"
+                        st.metric(f"{color} Correctness", f"{correct:.1%}")
+                        st.caption("Matches ground truth?")
+                    with m4:
+                        overall = metrics["overall"]
+                        color = "🟢" if overall >= 0.7 else "🟡" if overall >= 0.4 else "🔴"
+                        st.metric(f"{color} Overall Score", f"{overall:.1%}")
+                        st.caption("Weighted (GT = 50%)")
+                    
+                    st.info(
+                        "💡 **Correctness** compares the predicted answer directly against your "
+                        "ground truth. A wrong answer will score low here even if it sounds confident.",
+                        icon="ℹ️",
+                    )
+                else:
+                    # No ground truth — show only 3 metrics with a warning
+                    m1, m2, m3 = st.columns(3)
+                    with m1:
+                        faith = metrics["faithfulness"]
+                        color = "🟢" if faith >= 0.7 else "🟡" if faith >= 0.4 else "🔴"
+                        st.metric(f"{color} Faithfulness", f"{faith:.1%}")
+                        st.caption("Grounded in context?")
+                    with m2:
+                        rel = metrics["answer_relevancy"]
+                        color = "🟢" if rel >= 0.7 else "🟡" if rel >= 0.4 else "🔴"
+                        st.metric(f"{color} Answer Relevancy", f"{rel:.1%}")
+                        st.caption("Addresses the question?")
+                    with m3:
+                        overall = metrics["overall"]
+                        color = "🟢" if overall >= 0.7 else "🟡" if overall >= 0.4 else "🔴"
+                        st.metric(f"{color} Overall Score", f"{overall:.1%}")
+                        st.caption("Average of both metrics")
+
+                    st.warning(
+                        "⚠️ No ground truth provided. **Correctness cannot be measured.** "
+                        "The system can only check if answers sound relevant — it cannot detect "
+                        "factually wrong answers. Add ground truths for meaningful evaluation.",
+                        icon="⚠️",
+                    )
 
                 # Per-question breakdown
                 st.markdown("### Per-question answers")
@@ -471,13 +473,14 @@ with tab_eval:
                         if case["ground_truth"]:
                             st.markdown(f"**Ground Truth:** {case['ground_truth']}")
 
-        # History / tips
         st.markdown("---")
         with st.expander("💡 Evaluation Tips"):
             st.markdown("""
+- **Always provide ground truths** — without them, a wrong answer can still score 100% on faithfulness/relevancy  
 - **Faithfulness > 0.7** → answers are well-grounded in your documents  
 - **Answer Relevancy > 0.7** → answers address what was asked  
+- **Correctness > 0.7** → answers match the expected facts (requires ground truth)  
 - Low faithfulness often means your chunks are too small or TOP_K is too low  
-- Low relevancy often means the question is too vague or the document doesn't cover it  
+- Low correctness means the document may not contain the right information, or retrieval needs tuning  
 - Add diverse test cases (specific facts, list questions, relationship questions)
             """)
