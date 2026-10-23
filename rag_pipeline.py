@@ -132,7 +132,7 @@ def add_context_to_chunks(chunks: List[Document], doc_summary: str) -> List[Docu
 def summarize_document(text: str) -> str:
     try:
         llm = ChatGroq(model=LLM_MODEL, api_key=GROQ_API_KEY, temperature=0)
-        sample = text[:3000]
+        sample = text[:1500]
         response = llm.invoke(
             f"In ONE sentence, describe what this document is about:\n\n{sample}"
         )
@@ -211,7 +211,7 @@ JSON:"""
 
 def build_graph(chunks: List[Document]):
     global _graph
-    full_text = " ".join(c.page_content for c in chunks[:10])
+    full_text = " ".join(c.page_content for c in chunks[:5])[:2000]
     source = chunks[0].metadata.get("source", "unknown") if chunks else "unknown"
     triples = extract_entities_and_relations(full_text, source)
     for t in triples:
@@ -264,7 +264,7 @@ def hybrid_retrieve(question: str, k_dense: int = TOP_K_RETRIEVE) -> List[Docume
 
 def expand_query(question: str) -> str:
     try:
-        llm = ChatGroq(model=LLM_MODEL, api_key=GROQ_API_KEY, temperature=0)
+        llm = ChatGroq(model=LLM_MODEL, api_key=GROQ_API_KEY, temperature=0, max_tokens=512)
         response = llm.invoke(
             f"Rewrite this question in 2 different phrasings for search. "
             f"Return ONLY the rephrased versions, one per line, nothing else.\n\nQuestion: {question}"
@@ -370,11 +370,10 @@ def query_rag(question: str) -> Dict[str, Any]:
     top_docs = hybrid_retrieve(expanded)
     graph_ctx = graph_query(question)
 
-    doc_context = "\n\n---\n\n".join(d.page_content for d in top_docs)
+    doc_context = doc_context = "\n\n---\n\n".join(d.page_content[:500] for d in top_docs)
     if graph_ctx:
         doc_context = f"[Knowledge Graph Context]\n{graph_ctx}\n\n---\n\n{doc_context}"
-
-    llm = ChatGroq(model=LLM_MODEL, api_key=GROQ_API_KEY, temperature=0)
+    llm = ChatGroq(model=LLM_MODEL, api_key=GROQ_API_KEY, temperature=0, max_tokens=1024)
     final_prompt = QA_PROMPT.format(context=doc_context, question=question)
     response = llm.invoke(final_prompt)
 
