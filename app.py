@@ -1,32 +1,32 @@
 """
-app.py  —  Enhanced RAG Multimodal Assistant
+app.py  -  Enhanced RAG Multimodal Assistant (hardened)
 """
 
 import os
 import json
-import time
+import html
 
 import streamlit as st
 import networkx as nx
-import matplotlib.pyplot as plt
 import matplotlib
 matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+import pandas as pd
 
+import rag_pipeline as rp
 from rag_pipeline import (
     get_pinecone_index,
-    get_vector_store,
-    get_embeddings,
+    get_total_vectors,
     process_file,
     process_audio,
     query_rag,
     evaluate_rag,
-    _graph,
-    _all_chunks,
-    GROQ_API_KEY,
-    LLM_MODEL,
+    reset_all,
+    missing_config,
 )
 
 UPLOADED_FILES_LOG = "uploaded_files.json"
+AUDIO_EXTS = (".mp3", ".wav", ".m4a")
 
 st.set_page_config(
     page_title="RAG Assistant Pro",
@@ -37,69 +37,68 @@ st.set_page_config(
 
 st.markdown("""
 <style>
-.metric-card {
-    background: #1e1e2e;
-    border-radius: 10px;
-    padding: 16px;
-    margin: 6px 0;
-    border-left: 4px solid #7c3aed;
-}
 .source-badge {
-    background: #374151;
-    color: #d1d5db;
-    padding: 2px 8px;
-    border-radius: 12px;
-    font-size: 0.8em;
-    margin: 2px;
-    display: inline-block;
+    background: #374151; color: #d1d5db; padding: 2px 8px;
+    border-radius: 12px; font-size: 0.8em; margin: 2px; display: inline-block;
 }
 .graph-info {
-    background: #064e3b;
-    border-radius: 8px;
-    padding: 10px;
+    background: #064e3b; border-radius: 8px; padding: 10px;
     border-left: 3px solid #10b981;
-}
-.answer-box {
-    background: #1e293b;
-    border-radius: 10px;
-    padding: 20px;
-    border-left: 4px solid #3b82f6;
-    margin: 10px 0;
 }
 </style>
 """, unsafe_allow_html=True)
 
 st.title("🧠 RAG Multimodal Assistant Pro")
-st.caption("Hybrid Search · Cross-Encoder Reranking · Graph RAG · Vision · RAGAS Evaluation")
+st.caption("Hybrid Search · Cross-Encoder Reranking · Graph RAG · Vision · Evaluation")
+
+# ── Fail early with a readable message if secrets are missing ────────────────
+_missing = missing_config()
+if _missing:
+    st.error(
+        f"Missing secrets: {', '.join(_missing)}. "
+        "On Streamlit Cloud open **Manage app → Settings → Secrets** and add them."
+    )
+    st.stop()
 
 
 def load_log():
-    if os.path.exists(UPLOADED_FILES_LOG):
-        with open(UPLOADED_FILES_LOG, "r") as f:
-            return json.load(f)
+    try:
+        if os.path.exists(UPLOADED_FILES_LOG):
+            with open(UPLOADED_FILES_LOG, "r") as f:
+                data = json.load(f)
+                return data if isinstance(data, list) else []
+    except Exception:
+        pass
     return []
 
 
 def save_log(files):
-    with open(UPLOADED_FILES_LOG, "w") as f:
-        json.dump(files, f)
+    try:
+        with open(UPLOADED_FILES_LOG, "w") as f:
+            json.dump(files, f)
+    except Exception:
+        pass
 
 
+def icon_for(fname: str) -> str:
+    return "🎙️" if os.path.splitext(fname)[1].lower() in AUDIO_EXTS else "📄"
+
+
+# ═════════════════════════════ SIDEBAR ═══════════════════════════════════════
 with st.sidebar:
     st.title("📁 File Manager")
 
     st.markdown("### 🔌 Pinecone Status")
     try:
-        stats = get_pinecone_index().describe_index_stats()
-        total = stats.get("total_vector_count", 0)
-        st.success(f"✅ Connected — {total} vectors stored")
-        st.caption(f"Index: `{os.environ.get('PINECONE_INDEX_NAME', 'rag-index-v2')}`")
+        total = get_total_vectors()
+        st.success(f"✅ Connected - {total} vectors stored")
+        st.caption(f"Index: `{rp.INDEX_NAME}`")
     except Exception as e:
         st.error(f"❌ Pinecone error: {e}")
 
-    from rag_pipeline import _graph as kg
-    if kg.number_of_nodes() > 0:
-        st.success(f"🕸️ Graph: {kg.number_of_nodes()} entities, {kg.number_of_edges()} relations")
+    if rp._graph.number_of_nodes() > 0:
+        st.success(f"🕸️ Graph: {rp._graph.number_of_nodes()} entities, "
+                   f"{rp._graph.number_of_edges()} relations")
 
     st.markdown("---")
 
@@ -107,13 +106,18 @@ with st.sidebar:
     if uploaded_log:
         st.markdown("**📄 Uploaded files:**")
         for fname in uploaded_log:
-            ext = os.path.splitext(fname)[1].lower()
-            icon = "🎙️" if ext in (".mp3", ".wav", ".m4a") else "📄"
-            st.write(f"{icon} {fname}")
+            st.write(f"{icon_for(fname)} {fname}")
     else:
         st.info("No files uploaded yet.")
 
     st.markdown("---")
+
+    with st.expander("⚙️ Settings"):
+        show_debug = st.checkbox("Show debug panel", value=False)
+        st.markdown("**⚡ Speed vs Quality (upload)**")
+        rp.ENABLE_CONTEXTUAL_CHUNKING = st.checkbox("Contextual chunking (+5s/doc)", value=True)
+        rp.ENABLE_IMAGE_EXTRACTION = st.checkbox("Image extraction (+10s/image)", value=True)
+        rp.ENABLE_GRAPH_BUILDING = st.checkbox("Graph building (+5s/doc)", value=True)
 
     new_files = st.file_uploader(
         "Upload PDFs, Word docs, or Audio",
@@ -124,81 +128,55 @@ with st.sidebar:
     if new_files:
         for uf in new_files:
             if uf.name in uploaded_log:
-                st.warning(f"⚠️ Already uploaded: {uf.name}")
                 continue
             ext = os.path.splitext(uf.name)[1].lower()
-            if ext in (".mp3", ".wav", ".m4a"):
-                try:
-                    transcribed = process_audio(
-                        uf.read(), uf.name,
-                        progress_cb=lambda msg: st.info(msg)
-                    )
+            try:
+                if ext in AUDIO_EXTS:
+                    with st.spinner(f"Transcribing {uf.name}..."):
+                        transcribed = process_audio(uf.getvalue(), uf.name)
                     uploaded_log.append(uf.name)
                     save_log(uploaded_log)
                     st.success(f"✅ Audio processed: {uf.name}")
                     with st.expander("📄 Transcript preview"):
                         st.write(transcribed[:500] + "...")
-                except Exception as e:
-                    st.error(f"❌ Audio error: {e}")
-            else:
-                try:
+                else:
                     with st.spinner(f"Processing {uf.name}..."):
-                        pages, chunks = process_file(uf.read(), uf.name)
+                        pages, chunks = process_file(uf.getvalue(), uf.name)
                     uploaded_log.append(uf.name)
                     save_log(uploaded_log)
-                    st.success(f"✅ {uf.name} — {pages} pages, {chunks} chunks")
-                except Exception as e:
-                    st.error(f"❌ File error: {e}")
+                    st.success(f"✅ {uf.name} - {pages} pages, {chunks} chunks")
+            except Exception as e:
+                st.error(f"❌ Could not process {uf.name}: {e}")
 
     st.markdown("---")
 
-    with st.expander("⚙️ Settings"):
-        show_graph  = st.checkbox("Show knowledge graph", value=True)
-        show_debug  = st.checkbox("Show debug panel", value=False)
-        show_scores = st.checkbox("Show reranking scores", value=True)
-
-        st.markdown("**⚡ Speed vs Quality (upload)**")
-        enable_ctx = st.checkbox("Contextual chunking (+5s/doc)", value=True)
-        enable_img = st.checkbox("Image extraction (+10s/image)", value=True)
-        enable_grp = st.checkbox("Graph building (+5s/doc)", value=True)
-
-        import rag_pipeline as rp
-        rp.ENABLE_CONTEXTUAL_CHUNKING = enable_ctx
-        rp.ENABLE_IMAGE_EXTRACTION    = enable_img
-        rp.ENABLE_GRAPH_BUILDING      = enable_grp
-
     if st.button("🗑️ Clear everything", type="secondary"):
         try:
-            from pinecone import Pinecone
-            pc = Pinecone(api_key=os.environ["PINECONE_API_KEY"])
-            idx_name = os.environ.get("PINECONE_INDEX_NAME", "rag-index-v2")
-            if idx_name in [i.name for i in pc.list_indexes()]:
-                pc.delete_index(idx_name)
+            reset_all()
             if os.path.exists(UPLOADED_FILES_LOG):
                 os.remove(UPLOADED_FILES_LOG)
-            st.cache_resource.clear()
-            st.success("Cleared! Please refresh the page.")
+            for k in ("last_question", "last_result", "eval_cases"):
+                st.session_state.pop(k, None)
+            st.success("Cleared! Refresh the page.")
         except Exception as e:
             st.error(f"Clear error: {e}")
 
 
 uploaded_log = load_log()
-
 tab_chat, tab_graph, tab_eval = st.tabs(["💬 Chat", "🕸️ Knowledge Graph", "📊 Evaluation"])
 
 
+# ═════════════════════════════ CHAT TAB ══════════════════════════════════════
 with tab_chat:
     st.subheader("Ask anything across your files")
 
     if uploaded_log:
-        cols = st.columns(len(uploaded_log) if len(uploaded_log) <= 4 else 4)
+        cols = st.columns(min(len(uploaded_log), 4))
         for i, fname in enumerate(uploaded_log):
-            with cols[i % 4]:
-                ext = os.path.splitext(fname)[1].lower()
-                icon = "🎙️" if ext in (".mp3", ".wav", ".m4a") else "📄"
+            with cols[i % len(cols)]:
                 st.markdown(
-                    f'<div class="source-badge">{icon} {fname}</div>',
-                    unsafe_allow_html=True
+                    f'<div class="source-badge">{icon_for(fname)} {html.escape(fname)}</div>',
+                    unsafe_allow_html=True,
                 )
     else:
         st.warning("⬅️ Upload at least one file from the sidebar to get started.")
@@ -209,80 +187,80 @@ with tab_chat:
         "Your question:",
         placeholder="e.g. What are the key findings in the report?",
         key="main_question",
-    )
+    ).strip()
 
-    col_ask, col_clear = st.columns([1, 5])
-    with col_ask:
-        ask_btn = st.button("🔍 Ask", type="primary", use_container_width=True)
+    ask_btn = st.button("🔍 Ask", type="primary")
 
-    if (ask_btn or question) and question:
+    # Run only on button click or a NEW question (not on every unrelated rerun)
+    is_new = question and question != st.session_state.get("last_question")
+    if question and (ask_btn or is_new):
         if not uploaded_log:
             st.error("Please upload a file first.")
         else:
-            try:
-                stats = get_pinecone_index().describe_index_stats()
-                total = stats.get("total_vector_count", 0)
-                if total == 0:
-                    st.error("⚠️ Pinecone index is empty. Re-upload your files.")
-                    st.stop()
-            except Exception as e:
-                st.error(f"❌ Cannot reach Pinecone: {e}")
-                st.stop()
-
             with st.spinner("🔍 Hybrid search → Reranking → Generating answer..."):
-                result = query_rag(question)
+                try:
+                    st.session_state["last_result"] = query_rag(question)
+                except Exception as e:  # last line of defence
+                    st.session_state["last_result"] = {
+                        "result": f"Unexpected error: {e}",
+                        "source_documents": [], "graph_context": "",
+                        "expanded_query": question,
+                    }
+                st.session_state["last_question"] = question
 
-            answer     = result["result"]
-            top_docs   = result["source_documents"]
-            graph_ctx  = result["graph_context"]
-            expanded_q = result.get("expanded_query", question)
+    result = st.session_state.get("last_result")
+    if question and result and st.session_state.get("last_question") == question:
+        answer = result["result"]
+        top_docs = result["source_documents"]
+        graph_ctx = result["graph_context"]
+        expanded_q = result.get("expanded_query", question)
 
-            st.markdown("### 💡 Answer")
-            st.markdown(f'<div class="answer-box">{answer}</div>', unsafe_allow_html=True)
+        st.markdown("### 💡 Answer")
+        with st.container(border=True):
+            st.markdown(answer)   # markdown only - no raw HTML injection
 
-            if graph_ctx:
-                st.markdown(
-                    f'<div class="graph-info">🕸️ <b>Knowledge Graph enriched this answer:</b><br>'
-                    f'<code>{graph_ctx[:300]}</code></div>',
-                    unsafe_allow_html=True
-                )
+        if graph_ctx:
+            st.markdown(
+                '<div class="graph-info">🕸️ <b>Knowledge Graph enriched this answer:</b><br>'
+                f'<code>{html.escape(graph_ctx[:300])}</code></div>',
+                unsafe_allow_html=True,
+            )
 
-            st.markdown("---")
+        st.markdown("---")
+        col_src, col_chunks = st.columns(2)
+        with col_src:
+            st.markdown("**📎 Sources used:**")
+            for s in {d.metadata.get("source", "Unknown") for d in top_docs}:
+                st.write(f"• {s}")
+        with col_chunks:
+            st.markdown(f"**🔢 Chunks after reranking:** {len(top_docs)}")
+            types = {}
+            for d in top_docs:
+                t = d.metadata.get("type", "text")
+                types[t] = types.get(t, 0) + 1
+            for t, cnt in types.items():
+                st.write(f"• {t}: {cnt}")
 
-            col_src, col_chunks = st.columns(2)
-            with col_src:
-                st.markdown("**📎 Sources used:**")
-                sources = {doc.metadata.get("source", "Unknown") for doc in top_docs}
-                for s in sources:
-                    st.write(f"• {s}")
-
-            with col_chunks:
-                st.markdown(f"**🔢 Chunks after reranking:** {len(top_docs)}")
-                types = {}
-                for doc in top_docs:
-                    t = doc.metadata.get("type", "text")
-                    types[t] = types.get(t, 0) + 1
-                for t, cnt in types.items():
-                    st.write(f"• {t}: {cnt}")
-
-            if show_debug:
-                with st.expander("🔬 Debug — Retrieved & Reranked Chunks"):
-                    st.markdown(f"**Expanded query:**\n```\n{expanded_q}\n```")
-                    for i, doc in enumerate(top_docs):
-                        st.markdown(
-                            f"**Chunk {i+1}** — `{doc.metadata.get('source')}` | "
-                            f"type: `{doc.metadata.get('type', 'text')}`"
-                        )
-                        st.text(doc.page_content[:400])
-                        st.markdown("---")
+        if show_debug:
+            with st.expander("🔬 Debug - Retrieved & Reranked Chunks"):
+                st.markdown(f"**Expanded query:**\n```\n{expanded_q}\n```")
+                for i, d in enumerate(top_docs):
+                    st.markdown(
+                        f"**Chunk {i+1}** - `{d.metadata.get('source')}` | "
+                        f"type: `{d.metadata.get('type', 'text')}`"
+                    )
+                    st.text(d.page_content[:400])
+                    st.markdown("---")
 
 
+# ═════════════════════════════ GRAPH TAB ═════════════════════════════════════
 with tab_graph:
     st.subheader("🕸️ Knowledge Graph Explorer")
-    from rag_pipeline import _graph as kg
+    kg = rp._graph
 
     if kg.number_of_nodes() == 0:
-        st.info("Upload documents to build the knowledge graph automatically.")
+        st.info("Upload documents to build the knowledge graph automatically. "
+                "(The graph lives in memory and resets when the app restarts.)")
     else:
         col_info, col_search = st.columns(2)
         with col_info:
@@ -290,10 +268,8 @@ with tab_graph:
             st.metric("Relations (edges)", kg.number_of_edges())
 
         with col_search:
-            search_entity = st.text_input(
-                "Search entity in graph:",
-                placeholder="e.g. Python, Company Name ..."
-            )
+            search_entity = st.text_input("Search entity in graph:",
+                                          placeholder="e.g. Python, Company Name ...")
             if search_entity:
                 if kg.has_node(search_entity):
                     neighbors = list(kg.neighbors(search_entity))
@@ -310,64 +286,61 @@ with tab_graph:
 
         st.markdown("---")
         st.markdown("**Graph Visualization** (top 50 nodes by degree)")
+        try:
+            fig, ax = plt.subplots(figsize=(14, 8))
+            fig.patch.set_facecolor("#0e1117")
+            ax.set_facecolor("#0e1117")
 
-        fig, ax = plt.subplots(figsize=(14, 8))
-        fig.patch.set_facecolor("#0e1117")
-        ax.set_facecolor("#0e1117")
+            top_nodes = sorted(kg.degree(), key=lambda x: x[1], reverse=True)[:50]
+            subgraph = kg.subgraph([n for n, _ in top_nodes])
+            pos = nx.spring_layout(subgraph, seed=42, k=2)
+            degrees = dict(subgraph.degree())
+            node_sizes = [300 + degrees[n] * 100 for n in subgraph.nodes()]
 
-        top_nodes = sorted(kg.degree(), key=lambda x: x[1], reverse=True)[:50]
-        subgraph = kg.subgraph([n for n, _ in top_nodes])
-
-        pos = nx.spring_layout(subgraph, seed=42, k=2)
-        degrees = dict(subgraph.degree())
-        node_sizes = [300 + degrees[n] * 100 for n in subgraph.nodes()]
-
-        nx.draw_networkx_nodes(subgraph, pos, node_size=node_sizes, node_color="#7c3aed", alpha=0.85, ax=ax)
-        nx.draw_networkx_labels(subgraph, pos, font_color="white", font_size=7, ax=ax)
-        nx.draw_networkx_edges(subgraph, pos, edge_color="#4b5563", arrows=True, alpha=0.6, ax=ax)
-
-        edge_labels = {(u, v): d.get("relation", "")[:15] for u, v, d in subgraph.edges(data=True)}
-        nx.draw_networkx_edge_labels(subgraph, pos, edge_labels=edge_labels, font_color="#9ca3af", font_size=6, ax=ax)
-
-        ax.axis("off")
-        plt.tight_layout()
-        st.pyplot(fig)
-        plt.close(fig)
+            nx.draw_networkx_nodes(subgraph, pos, node_size=node_sizes,
+                                   node_color="#7c3aed", alpha=0.85, ax=ax)
+            nx.draw_networkx_labels(subgraph, pos, font_color="white", font_size=7, ax=ax)
+            nx.draw_networkx_edges(subgraph, pos, edge_color="#4b5563", alpha=0.6, ax=ax)
+            edge_labels = {(u, v): d.get("relation", "")[:15]
+                           for u, v, d in subgraph.edges(data=True)}
+            nx.draw_networkx_edge_labels(subgraph, pos, edge_labels=edge_labels,
+                                         font_color="#9ca3af", font_size=6, ax=ax)
+            ax.axis("off")
+            plt.tight_layout()
+            st.pyplot(fig)
+            plt.close(fig)
+        except Exception as e:
+            st.warning(f"Could not draw graph: {e}")
 
         with st.expander("📋 All relations (click to expand)"):
-            rows = []
-            for u, v, d in kg.edges(data=True):
-                rows.append({
-                    "Entity 1": u,
-                    "Relation": d.get("relation", ""),
-                    "Entity 2": v,
-                    "Source": d.get("source", ""),
-                })
-            import pandas as pd
+            rows = [{"Entity 1": u, "Relation": d.get("relation", ""),
+                     "Entity 2": v, "Source": d.get("source", "")}
+                    for u, v, d in kg.edges(data=True)]
             st.dataframe(pd.DataFrame(rows), use_container_width=True)
 
 
-# ── TAB 3: EVALUATION ────────────────────────────────────────────────────────
+# ═════════════════════════════ EVAL TAB ══════════════════════════════════════
+def _color(x: float) -> str:
+    return "🟢" if x >= 0.7 else "🟡" if x >= 0.4 else "🔴"
+
+
 with tab_eval:
     st.subheader("📊 RAG Evaluation Dashboard")
-    st.caption("Evaluate your RAG pipeline with faithfulness, answer relevancy, and correctness scores")
+    st.caption("Faithfulness, answer relevancy, and correctness (LLM-judged)")
 
     if not uploaded_log:
         st.warning("Upload documents before running evaluation.")
     else:
-        # ── Explanation of metrics ────────────────────────────────────────────
-        with st.expander("ℹ️ How are these metrics calculated?", expanded=False):
+        with st.expander("ℹ️ How are these metrics calculated?"):
             st.markdown("""
 | Metric | What it measures | Uses ground truth? |
 |---|---|---|
-| **Faithfulness** | Is the answer grounded in the retrieved context? | ❌ No |
-| **Answer Relevancy** | Does the answer address the question asked? | ❌ No |
-| **Correctness** | Does the answer match the expected ground truth? | ✅ Yes — required |
-| **Overall** | Weighted average (correctness = 50% when GT provided) | — |
+| **Faithfulness** | Is the answer grounded in the retrieved context? | No |
+| **Answer Relevancy** | Does the answer address the question asked? | No |
+| **Correctness** | Does the answer match the expected ground truth? | Yes (required) |
+| **Overall** | Weighted average (correctness = 50% when GT provided) | - |
 
-> ⚠️ **Why ground truth matters:** Without a ground truth, the system can only check whether the  
-> answer *sounds* relevant and is supported by context — it cannot catch factually wrong answers.  
-> Always provide a ground truth to get meaningful scores.
+Without a ground truth the system cannot catch factually wrong answers, so always provide one.
             """)
 
         st.markdown("**Add test Q&A pairs below** (ground truth is optional but strongly recommended):")
@@ -380,19 +353,17 @@ with tab_eval:
                 c1, c2 = st.columns(2)
                 with c1:
                     st.session_state.eval_cases[i]["question"] = st.text_input(
-                        "Question", value=case["question"], key=f"q_{i}"
-                    )
+                        "Question", value=case["question"], key=f"q_{i}")
                 with c2:
                     st.session_state.eval_cases[i]["ground_truth"] = st.text_input(
-                        "Ground Truth (strongly recommended)", value=case["ground_truth"], key=f"gt_{i}"
-                    )
+                        "Ground Truth (strongly recommended)",
+                        value=case["ground_truth"], key=f"gt_{i}")
 
         col_add, col_run = st.columns(2)
         with col_add:
             if st.button("➕ Add test case"):
                 st.session_state.eval_cases.append({"question": "", "ground_truth": ""})
                 st.rerun()
-
         with col_run:
             run_eval = st.button("▶️ Run Evaluation", type="primary")
 
@@ -401,86 +372,44 @@ with tab_eval:
             if not valid_cases:
                 st.error("Add at least one question.")
             else:
-                with st.spinner(f"Running evaluation on {len(valid_cases)} test case(s)..."):
-                    metrics = evaluate_rag(valid_cases)
+                try:
+                    with st.spinner(f"Running evaluation on {len(valid_cases)} test case(s)..."):
+                        metrics = evaluate_rag(valid_cases)
+                except Exception as e:
+                    st.error(f"Evaluation failed: {e}")
+                    st.stop()
 
                 st.markdown("---")
                 st.markdown("### Results")
-
                 has_gt = metrics.get("has_ground_truth", False)
 
+                items = [("Faithfulness", metrics["faithfulness"], "Grounded in context?"),
+                         ("Answer Relevancy", metrics["answer_relevancy"], "Addresses the question?")]
                 if has_gt:
-                    # Show all 4 metrics
-                    m1, m2, m3, m4 = st.columns(4)
-                    with m1:
-                        faith = metrics["faithfulness"]
-                        color = "🟢" if faith >= 0.7 else "🟡" if faith >= 0.4 else "🔴"
-                        st.metric(f"{color} Faithfulness", f"{faith:.1%}")
-                        st.caption("Grounded in context?")
-                    with m2:
-                        rel = metrics["answer_relevancy"]
-                        color = "🟢" if rel >= 0.7 else "🟡" if rel >= 0.4 else "🔴"
-                        st.metric(f"{color} Answer Relevancy", f"{rel:.1%}")
-                        st.caption("Addresses the question?")
-                    with m3:
-                        correct = metrics["correctness"]
-                        color = "🟢" if correct >= 0.7 else "🟡" if correct >= 0.4 else "🔴"
-                        st.metric(f"{color} Correctness", f"{correct:.1%}")
-                        st.caption("Matches ground truth?")
-                    with m4:
-                        overall = metrics["overall"]
-                        color = "🟢" if overall >= 0.7 else "🟡" if overall >= 0.4 else "🔴"
-                        st.metric(f"{color} Overall Score", f"{overall:.1%}")
-                        st.caption("Weighted (GT = 50%)")
-                    
-                    st.info(
-                        "💡 **Correctness** compares the predicted answer directly against your "
-                        "ground truth. A wrong answer will score low here even if it sounds confident.",
-                        icon="ℹ️",
-                    )
-                else:
-                    # No ground truth — show only 3 metrics with a warning
-                    m1, m2, m3 = st.columns(3)
-                    with m1:
-                        faith = metrics["faithfulness"]
-                        color = "🟢" if faith >= 0.7 else "🟡" if faith >= 0.4 else "🔴"
-                        st.metric(f"{color} Faithfulness", f"{faith:.1%}")
-                        st.caption("Grounded in context?")
-                    with m2:
-                        rel = metrics["answer_relevancy"]
-                        color = "🟢" if rel >= 0.7 else "🟡" if rel >= 0.4 else "🔴"
-                        st.metric(f"{color} Answer Relevancy", f"{rel:.1%}")
-                        st.caption("Addresses the question?")
-                    with m3:
-                        overall = metrics["overall"]
-                        color = "🟢" if overall >= 0.7 else "🟡" if overall >= 0.4 else "🔴"
-                        st.metric(f"{color} Overall Score", f"{overall:.1%}")
-                        st.caption("Average of both metrics")
+                    items.append(("Correctness", metrics["correctness"], "Matches ground truth?"))
+                items.append(("Overall Score", metrics["overall"],
+                              "Weighted (GT = 50%)" if has_gt else "Average of both metrics"))
 
-                    st.warning(
-                        "⚠️ No ground truth provided. **Correctness cannot be measured.** "
-                        "The system can only check if answers sound relevant — it cannot detect "
-                        "factually wrong answers. Add ground truths for meaningful evaluation.",
-                        icon="⚠️",
-                    )
+                for col, (label, val, cap) in zip(st.columns(len(items)), items):
+                    with col:
+                        st.metric(f"{_color(val)} {label}", f"{val:.1%}")
+                        st.caption(cap)
 
-                # Per-question breakdown
+                if not has_gt:
+                    st.warning("No ground truth provided - correctness cannot be measured.")
+
                 st.markdown("### Per-question answers")
-                for i, case in enumerate(valid_cases):
-                    with st.expander(f"Q{i+1}: {case['question'][:60]}..."):
-                        result = query_rag(case["question"])
-                        st.markdown(f"**Answer:** {result['result']}")
-                        if case["ground_truth"]:
-                            st.markdown(f"**Ground Truth:** {case['ground_truth']}")
+                for i, d in enumerate(metrics.get("details", [])):
+                    with st.expander(f"Q{i+1}: {d['question'][:60]}"):
+                        st.markdown(f"**Answer:** {d['answer']}")
+                        if d["ground_truth"]:
+                            st.markdown(f"**Ground Truth:** {d['ground_truth']}")
 
-        st.markdown("---")
         with st.expander("💡 Evaluation Tips"):
             st.markdown("""
-- **Always provide ground truths** — without them, a wrong answer can still score 100% on faithfulness/relevancy  
-- **Faithfulness > 0.7** → answers are well-grounded in your documents  
-- **Answer Relevancy > 0.7** → answers address what was asked  
-- **Correctness > 0.7** → answers match the expected facts (requires ground truth)  
-- Low faithfulness often means your chunks are too small or TOP_K is too low  
-- Low correctness means the document may not contain the right information, or retrieval needs tuning  
-- Add diverse test cases (specific facts, list questions, relationship questions)
+- **Always provide ground truths**; without them a wrong answer can still score high.
+- **Faithfulness > 0.7** means answers are well grounded in your documents.
+- **Answer Relevancy > 0.7** means answers address what was asked.
+- **Correctness > 0.7** means answers match the expected facts.
+- Add diverse test cases (specific facts, list questions, relationship questions).
             """)
