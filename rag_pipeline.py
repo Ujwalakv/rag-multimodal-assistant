@@ -28,7 +28,7 @@ from langchain_community.document_loaders import PyMuPDFLoader, Docx2txtLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 try:
-    from langchain_huggingface import HuggingFaceEmbeddings
+    from langchain_huggingface import HuggingFaceEmbeddings  # type: ignore[reportMissingImports]
 except ImportError:  # older environments
     from langchain_community.embeddings import HuggingFaceEmbeddings
 
@@ -128,17 +128,51 @@ def missing_config() -> List[str]:
 # ─────────────────────────────────────────────
 #  LLM HELPER (single place that talks to Groq chat)
 # ─────────────────────────────────────────────
+_NON_CHAT = ("whisper", "guard", "tts", "playai", "orpheus", "safeguard",
+             "embed", "compound", "distil-whisper")
+_PREFERRED = ["llama-3.3-70b-versatile", "llama-3.1-8b-instant",
+              "openai/gpt-oss-120b", "openai/gpt-oss-20b"]
+_models_cache: Dict[str, Any] = {"ids": None}
+
+
+def _available_chat_models() -> List[str]:
+    """Ask Groq which models THIS API key can actually use right now."""
+    if _models_cache["ids"] is None:
+        from groq import Groq as GroqClient
+        listed = GroqClient(api_key=GROQ_API_KEY).models.list()
+        ids = [m.id for m in listed.data
+               if not any(x in m.id.lower() for x in _NON_CHAT)]
+        _models_cache["ids"] = ids
+    return _models_cache["ids"]
+
+
+def _candidate_models() -> List[str]:
+    try:
+        avail = _available_chat_models()
+    except Exception:
+        return list(dict.fromkeys([LLM_MODEL] + FALLBACK_MODELS))
+    ordered = [LLM_MODEL] + _PREFERRED
+    ordered = [m for m in ordered if m in avail]
+    ordered += [m for m in avail if m not in ordered]   # anything else that works
+    return ordered or list(dict.fromkeys([LLM_MODEL] + FALLBACK_MODELS))
+
+
 def llm_invoke(prompt: str, max_tokens: int = 1024) -> str:
-    """Call Groq; if a model is rejected/decommissioned/rate-limited, try the next one."""
-    last_err: Optional[Exception] = None
-    for model in dict.fromkeys([LLM_MODEL] + FALLBACK_MODELS):
+    """Call Groq; try every model this key has access to until one works."""
+    errors: List[str] = []
+    for model in _candidate_models()[:6]:
         try:
+            tokens = max(max_tokens, 2048) if "gpt-oss" in model else max_tokens
             llm = ChatGroq(model=model, api_key=GROQ_API_KEY,
-                           temperature=0, max_tokens=max_tokens)
-            return str(llm.invoke(prompt).content)
+                           temperature=0, max_tokens=tokens)
+            text = str(llm.invoke(prompt).content).strip()
+            if text:
+                return text
+            errors.append(f"{model}: empty response")
         except Exception as e:  # noqa: BLE001
-            last_err = e
-    raise RuntimeError(f"All Groq models failed. Last error: {last_err}")
+            errors.append(f"{model}: {str(e)[:150]}")
+    _models_cache["ids"] = None   # re-discover next time
+    raise RuntimeError("All Groq models failed. " + " | ".join(errors))
 
 
 # ─────────────────────────────────────────────
