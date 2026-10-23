@@ -31,7 +31,7 @@ GROQ_API_KEY     = os.environ["GROQ_API_KEY"]
 INDEX_NAME       = os.environ.get("PINECONE_INDEX_NAME", "rag-index-v2")
 EMBEDDING_DIM    = 1024
 EMBEDDING_MODEL  = "BAAI/bge-large-en-v1.5"
-LLM_MODEL        = "llama-3.3-70b-versatile"
+LLM_MODEL        = "llama3-70b-8192"
 WHISPER_MODEL    = "whisper-large-v3"
 CHUNK_SIZE       = 1500
 CHUNK_OVERLAP    = 200
@@ -166,7 +166,7 @@ def extract_images_from_pdf(pdf_path: str, filename: str) -> List[Document]:
 
             try:
                 response = client.chat.completions.create(
-                    model="meta-llama/llama-4-scout-17b-16e-instruct",
+                    model="meta-llama/llama-4-scout-17b-16e-instruct-fp8",
                     messages=[{
                         "role": "user",
                         "content": [
